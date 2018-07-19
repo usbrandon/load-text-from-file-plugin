@@ -1,5 +1,6 @@
 package org.pentaho.di.trans.steps.loadtextfromfile;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
@@ -18,29 +19,57 @@ import javax.xml.transform.sax.TransformerHandler;
 import javax.xml.transform.stream.StreamResult;
 
 import com.google.gson.Gson;
+import org.apache.tika.Tika;
+import org.apache.tika.config.TikaConfig;
 import org.apache.tika.detect.DefaultDetector;
 import org.apache.tika.detect.Detector;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.mime.MimeTypeException;
 import org.apache.tika.parser.AutoDetectParser;
+import org.apache.tika.parser.DefaultParser;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.parser.PasswordProvider;
 import org.apache.tika.parser.html.BoilerpipeContentHandler;
 import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.ExpandedTitleContentHandler;
+import org.pentaho.di.core.exception.KettleException;
+import org.pentaho.di.core.logging.LogChannelInterface;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.helpers.DefaultHandler;
 
 public class TikaOutput {
-  
-  private static TikaOutput instance = null;
-  
-  
-  private TikaOutput() {
+
+  private final TikaConfig tikaConfig;
+  private final Tika tika;
+  private final LogChannelInterface log;
+
+  private ParseContext context;
+  private Detector detector;
+  private Parser parser;
+
+  private Metadata lastMetadata;
+  /**
+   * Output character encoding, or <code>null</code> for platform default
+   */
+  private String encoding = null;
+
+  /**
+   * Password for opening encrypted documents, or <code>null</code>.
+   */
+  private String password = System.getenv("TIKA_PASSWORD");
+
+  private boolean prettyPrint = false;
+
+
+  public TikaOutput( ClassLoader classLoader, LogChannelInterface log ) throws IOException, MimeTypeException {
+    tikaConfig = new TikaConfig(classLoader);
+    this.log = log;
+    tika = new Tika(tikaConfig);
     context = new ParseContext();
-    detector = new DefaultDetector();
-    parser = new AutoDetectParser(detector);
+    detector = tika.getDetector();
+    parser = tika.getParser();
     context.set(Parser.class, parser);
     context.set(PasswordProvider.class, new PasswordProvider() {
         public String getPassword(Metadata metadata) {
@@ -49,20 +78,12 @@ public class TikaOutput {
     });
   }
   
-  public static TikaOutput getInstance() {
-    if(null == instance) {
-      instance = new TikaOutput();
-    }
-    return instance;
-  }
-  
   private class OutputType {
 
     public void process(InputStream input, OutputStream output, Metadata metadata) throws Exception {
-        Parser p = parser;
-        
         ContentHandler handler = getContentHandler(output, metadata);
-        p.parse(input, handler, metadata, context);
+        parser.parse(input, handler, metadata, context);
+
         // fix for TIKA-596: if a parser doesn't generate
         // XHTML output, the lack of an output document prevents
         // metadata from being output: this fixes that
@@ -81,95 +102,92 @@ public class TikaOutput {
     
   }
 
-  public final OutputType XML = new OutputType() {
+  public final OutputType getXML() {
+    return new OutputType() {
       @Override
       protected ContentHandler getContentHandler(
-              OutputStream output, Metadata metadata) throws Exception {
-          return getTransformerHandler(output, "xml", encoding, prettyPrint);
+        OutputStream output, Metadata metadata ) throws Exception {
+        return getTransformerHandler( output, "xml", encoding, prettyPrint );
       }
-  };
+    };
+  }
   
-  public final OutputType HTML = new OutputType() {
+  public final OutputType getHTML() {
+    return new OutputType() {
       @Override
       protected ContentHandler getContentHandler(
-              OutputStream output, Metadata metadata) throws Exception {
-          return new ExpandedTitleContentHandler(getTransformerHandler(output, "html", encoding, prettyPrint));
+        OutputStream output, Metadata metadata ) throws Exception {
+        return new ExpandedTitleContentHandler( getTransformerHandler( output, "html", encoding, prettyPrint ) );
       }
-  };
+    };
+  }
   
-  public final OutputType TEXT = new OutputType() {
+  public final OutputType getTEXT() {
+    return new OutputType() {
       @Override
       protected ContentHandler getContentHandler(
-              OutputStream output, Metadata metadata) throws Exception {
-          return new BodyContentHandler(getOutputWriter(output, encoding));
+        OutputStream output, Metadata metadata) throws Exception {
+        return new BodyContentHandler(getOutputWriter(output, encoding));
       }
-  };
+    };
+  }
   
-  public final OutputType NO_OUTPUT = new OutputType() {
+  public final OutputType getNO_OUTPUT() {
+    return new OutputType() {
       @Override
       protected ContentHandler getContentHandler(
-              OutputStream output, Metadata metadata) {
-          return new DefaultHandler();
+        OutputStream output, Metadata metadata) {
+        return new DefaultHandler();
       }
-  };
+    };
+  }
   
-  public final OutputType TEXT_MAIN = new OutputType() {
+  public final OutputType getTEXT_MAIN() {
+    return new OutputType() {
       @Override
       protected ContentHandler getContentHandler(
-              OutputStream output, Metadata metadata) throws Exception {
-          return new BoilerpipeContentHandler(getOutputWriter(output, encoding));
+        OutputStream output, Metadata metadata ) throws Exception {
+        return new BoilerpipeContentHandler( getOutputWriter( output, encoding ) );
       }
-  };
+    };
+  }
   
-  public final OutputType METADATA = new OutputType() {
+  public final OutputType getMETADATA() {
+    return new OutputType() {
       @Override
       protected ContentHandler getContentHandler(
-              OutputStream output, Metadata metadata) throws Exception {
-          final PrintWriter writer =
-              new PrintWriter(getOutputWriter(output, encoding));
-          return new NoDocumentMetHandler(metadata, writer);
+        OutputStream output, Metadata metadata ) throws Exception {
+        final PrintWriter writer =
+          new PrintWriter( getOutputWriter( output, encoding ) );
+        return new NoDocumentMetHandler( metadata, writer );
       }
-  };
+    };
+  }
   
-  public final OutputType JSON = new OutputType() {
+  public final OutputType getJSON() {
+    return new OutputType() {
       @Override
       protected ContentHandler getContentHandler(
-              OutputStream output, Metadata metadata) throws Exception {
-          final PrintWriter writer =
-                  new PrintWriter(getOutputWriter(output, encoding));
-          return new NoDocumentJSONMetHandler(metadata, writer);
+        OutputStream output, Metadata metadata ) throws Exception {
+        final PrintWriter writer =
+          new PrintWriter( getOutputWriter( output, encoding ) );
+        return new NoDocumentJSONMetHandler( metadata, writer );
       }
-  };
+    };
+  }
   
   @SuppressWarnings("serial")
-  public static final HashMap<String,OutputType> fileOutputTypeCodes = new HashMap<String,OutputType>() {{
-    put("Plain text", TikaOutput.getInstance().TEXT);
-    put("Main content", TikaOutput.getInstance().TEXT_MAIN);
-    put("XML", TikaOutput.getInstance().XML);
-    put("HTML", TikaOutput.getInstance().HTML);
-    put("JSON", TikaOutput.getInstance().JSON);
-  }};
-  
-  
-  private ParseContext context;
-  
-  private Detector detector;
-  
-  private Parser parser;
+  public HashMap<String,OutputType> getFileOutputTypeCodes() {
 
-  
-  /**
-   * Output character encoding, or <code>null</code> for platform default
-   */
-  private String encoding = null;
-  
-  /**
-   * Password for opening encrypted documents, or <code>null</code>.
-   */
-  private String password = System.getenv("TIKA_PASSWORD");
+    return new HashMap<String, OutputType>() {{
+      put( "Plain text", getTEXT() );
+      put( "Main content", getTEXT_MAIN() );
+      put( "XML", getXML() );
+      put( "HTML", getHTML() );
+      put( "JSON", getJSON() );
+    }};
+  }
 
-  private boolean prettyPrint = false;
-  
   
   private class NoDocumentMetHandler extends DefaultHandler {
   
@@ -326,24 +344,35 @@ public class TikaOutput {
       return handler;
   }
   
-  private static OutputType getTypeByName(String name) {
-    return fileOutputTypeCodes.get(name);
+  private OutputType getTypeByName(String name) {
+    return getFileOutputTypeCodes().get(name);
   }
   
-  public static void parse(InputStream in, String outputFormat, OutputStream out) throws Exception {
+  public void parse(InputStream in, String outputFormat, OutputStream out) throws Exception {
+
     InputStream input = TikaInputStream.get(in);
     OutputType type = getTypeByName(outputFormat);
     try {
-        type.process(input, out, new Metadata());
+      lastMetadata = new Metadata();
+      type.process(input, out, lastMetadata);
     } catch(Exception e) {
-      e.printStackTrace();
-      throw e;
+      throw new KettleException("Error processing output type : "+type.toString(), e);
     }
       finally {
       try{
         input.close();
         out.flush();
-      }catch(Exception e) {e.printStackTrace();}
+      } catch(Exception e) {
+        throw new KettleException("Error closing file", e);
+      }
     }
+  }
+
+  public Metadata getLastMetadata() {
+    return lastMetadata;
+  }
+
+  public void setLastMetadata( Metadata lastMetadata ) {
+    this.lastMetadata = lastMetadata;
   }
 }

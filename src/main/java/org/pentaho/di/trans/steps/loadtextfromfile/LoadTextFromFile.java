@@ -1,14 +1,13 @@
 package org.pentaho.di.trans.steps.loadtextfromfile;
 
-import java.io.*;
-import java.util.Date;
-import java.util.List;
-
-import org.apache.commons.vfs.FileObject;
-import org.apache.tika.io.TaggedIOException;
+import org.apache.commons.lang.StringUtils;
+import org.apache.commons.vfs2.FileObject;
+import org.apache.tika.metadata.Metadata;
+import org.json.simple.JSONObject;
 import org.pentaho.di.core.Const;
 import org.pentaho.di.core.ResultFile;
 import org.pentaho.di.core.exception.KettleException;
+import org.pentaho.di.core.exception.KettleFileException;
 import org.pentaho.di.core.exception.KettleStepException;
 import org.pentaho.di.core.fileinput.FileInputList;
 import org.pentaho.di.core.row.RowDataUtil;
@@ -24,6 +23,14 @@ import org.pentaho.di.trans.step.StepDataInterface;
 import org.pentaho.di.trans.step.StepInterface;
 import org.pentaho.di.trans.step.StepMeta;
 import org.pentaho.di.trans.step.StepMetaInterface;
+
+import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.util.Date;
+import java.util.List;
 
 /**
  * Read files, parse them and convert them to rows and writes these to one or more output streams.
@@ -41,7 +48,7 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
     super( stepMeta, stepDataInterface, copyNr, transMeta, trans );
   }
 
-  private void addFileToResultFilesname( FileObject file ) throws Exception {
+  private void addFileToResultFilesname( FileObject file ) {
     if ( meta.addResultFile() ) {
       // Add this to the result file names...
       ResultFile resultFile =
@@ -77,7 +84,7 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
 
           if ( meta.getIsInFields() ) {
             // Check is filename field is provided
-            if ( Const.isEmpty( meta.getDynamicFilenameField() ) ) {
+            if ( StringUtils.isEmpty( meta.getDynamicFilenameField() ) ) {
               logError( BaseMessages.getString( PKG, "LoadTextFromFile.Log.NoField" ) );
               throw new KettleException( BaseMessages.getString( PKG, "LoadTextFromFile.Log.NoField" ) );
             }
@@ -107,18 +114,18 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
                 Fieldvalue ) );
         }
 
-        FileObject file = null;
         try {
           // Source is a file.
           data.file = KettleVFS.getFileObject( Fieldvalue );
-        } catch ( Exception e ) {
+        } catch ( KettleFileException e ) {
           throw new KettleException( e );
         } finally {
           try {
-            if ( file != null ) {
-              file.close();
+            if ( data.file != null ) {
+              data.file.close();
             }
           } catch ( Exception e ) {
+            logError( "Error closing file", e );
           }
         }
       } else {
@@ -132,7 +139,7 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
 
         // Is this the last file?
         data.last_file = (data.filenr == data.files.nrOfFiles() - 1);
-        data.file = (FileObject) data.files.getFile( data.filenr );
+        data.file = data.files.getFile( data.filenr );
       }
 
       // Check if file is empty
@@ -173,7 +180,7 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
         }
         // get File content
         getFileContent();
-
+        
         addFileToResultFilesname( data.file );
 
         if ( isDetailed() ) {
@@ -183,7 +190,7 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
 
     } catch ( Exception e ) {
       logError( BaseMessages.getString( PKG, "LoadTextFromFile.Log.UnableToOpenFile", "" + data.filenr, data.file
-            .toString(), e.toString() ) );
+            .toString(), e.toString() ), e );
       stopAll();
       setErrors( 1 );
       return false;
@@ -193,7 +200,6 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
 
   public boolean processRow( StepMetaInterface smi, StepDataInterface sdi ) throws KettleException {
 
-    Object[] r = null;
     try {
       // Grab a row
       Object[] outputRowData = getOneRow();
@@ -215,10 +221,10 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
         return false;
       }
     } catch ( KettleException e ) {
-      String errorMessage = null;
+      String errorMessage = "Error encountered : "+e.getMessage();
 
       if ( getStepMeta().isDoingErrorHandling() ) {
-        putError( getInputRowMeta(), r, 1, errorMessage, meta.getFilenameField(), "LoadTextFromFile001" );
+        putError( getInputRowMeta(), new Object[0], 1, errorMessage, meta.getFilenameField(), "LoadTextFromFile001" );
       } else {
         logError( BaseMessages.getString( PKG, "LoadTextFromFile.ErrorInStepRunning", e.getMessage() ) );
         throw new KettleStepException( BaseMessages.getString( PKG, "LoadTextFromFile.ErrorInStepRunning" ), e );
@@ -245,7 +251,7 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
    * @param vfsFilename the filename or URL to read from
    * @param encoding    the character set of the string (UTF-8, ISO8859-1, etc)
    * @return The content of the file as a String
-   * @throws IOException
+   * @throws KettleException
    */
   public String getTextFileContent( String vfsFilename, String encoding ) throws KettleException {
     InputStream inputStream = null;
@@ -262,16 +268,17 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
         inputStream = KettleVFS.getInputStream( vfsFilename );
       }
       ByteArrayOutputStream baos = new ByteArrayOutputStream();
-      TikaOutput.parse( inputStream, meta.getOutputFormat(), baos );
+      data.tikaOutput.parse( inputStream, meta.getOutputFormat(), baos );
       retval = baos.toString();
     } catch ( Exception e ) {
       throw new KettleException( BaseMessages.getString( PKG, "LoadTextFromFile.Error.GettingFileContent", vfsFilename,
-            e.toString() ) );
+            e.toString() ), e );
     } finally {
       if ( reader != null ) {
         try {
           reader.close();
         } catch ( Exception e ) {
+          throw new KettleException("Error closing reader", e);
         }
       }
       ;
@@ -279,6 +286,7 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
         try {
           inputStream.close();
         } catch ( Exception e ) {
+          throw new KettleException("Error closing stream", e);
         }
       }
       ;
@@ -389,7 +397,7 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
 
       // See if we need to add the row number to the row...
       if ( meta.includeRowNumber() && meta.getRowNumberField() != null && meta.getRowNumberField().length() > 0 ) {
-        outputRowData[rowIndex++] = new Long( data.rownr );
+        outputRowData[rowIndex++] = data.rownr;
       }
       // Possibly add short filename...
       if ( meta.getShortFileNameField() != null && meta.getShortFileNameField().length() > 0 ) {
@@ -406,7 +414,7 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
 
       // add Hidden
       if ( meta.isHiddenField() != null && meta.isHiddenField().length() > 0 ) {
-        outputRowData[rowIndex++] = new Boolean( data.hidden );
+        outputRowData[rowIndex++] = data.hidden;
       }
       // Add modification date
       if ( meta.getLastModificationDateField() != null && meta.getLastModificationDateField().length() > 0 ) {
@@ -420,10 +428,16 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
       if ( meta.getRootUriField() != null && meta.getRootUriField().length() > 0 ) {
         outputRowData[rowIndex++] = data.rootUriName;
       }
+      
+      if (StringUtils.isNotEmpty( meta.getMetadataFieldName() )) {
+        outputRowData[rowIndex++] = getMetadataJson(data.tikaOutput.getLastMetadata());
+      }
+      
       RowMetaInterface irow = getInputRowMeta();
 
-      data.previousRow = irow == null ? outputRowData : (Object[]) irow.cloneRow( outputRowData ); // copy it to make
-      // surely the next step doesn't change it in between...
+      // copy it to make sure the next step doesn't change it in between...
+      //
+      data.previousRow = irow == null ? outputRowData : irow.cloneRow( outputRowData );
 
       incrementLinesInput();
       data.rownr++;
@@ -433,6 +447,14 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
     }
 
     return outputRowData;
+  }
+
+  private String getMetadataJson( Metadata metadata ) {
+    JSONObject obj = new JSONObject();
+    for (String name : metadata.names()) {
+      obj.put(name, metadata.get(name));
+    }
+    return obj.toJSONString();
   }
 
   public boolean init( StepMetaInterface smi, StepDataInterface sdi ) {
@@ -458,6 +480,15 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
           logError( Const.getStackTracker( e ) );
           return false;
         }
+
+        try {
+          ClassLoader classLoader = getStepMeta().getStepMetaInterface().getClass().getClassLoader();
+
+          data.tikaOutput = new TikaOutput(classLoader, log);
+
+        } catch(Exception e) {
+          logError("Tika Error", e);
+        }
       }
       data.rownr = 1L;
       data.nrInputFields = meta.getInputFields().length;
@@ -474,6 +505,7 @@ public class LoadTextFromFile extends BaseStep implements StepInterface {
       try {
         data.file.close();
       } catch ( Exception e ) {
+        logError( "Error closing file", e );
       }
     }
     super.dispose( smi, sdi );
