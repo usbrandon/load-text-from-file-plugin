@@ -5,7 +5,7 @@
   <parent>
     <groupId>org.pentaho</groupId>
     <artifactId>pentaho-ce-jar-parent-pom</artifactId>
-    <version>8.1-SNAPSHOT</version>
+    <version>8.2.0.1-427</version>
   </parent>
   <artifactId>load-text-from-file-plugin</artifactId>
   <name>${project.artifactId}</name>
@@ -19,7 +19,7 @@
     </license>
   </licenses>
   <properties>
-    <pentaho-kettle.version>8.1-SNAPSHOT</pentaho-kettle.version>
+    <pentaho-kettle.version>8.2.0.1-427</pentaho-kettle.version>
     <mockito-all.version>1.9.5</mockito-all.version>
     <junit.version>4.4</junit.version>
   </properties>
